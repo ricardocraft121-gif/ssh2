@@ -3,30 +3,32 @@
  * Bot para PocketMine-MP
  * Proto 70 (MCPE 0.15.x) y proto 84 (MCPE 0.16.x)
  *
- * Uso: node mc.js <ip> <port> <nombre> <bots> <time> [mensajes] [intervalo_msg]
+ * Uso: node mc.js <ip> <port> <bots> <time> [mensajes] [intervalo_msg]
  *
  * Ejemplos:
- *   node mc.js 127.0.0.1 19132 Bot 1 0
- *   node mc.js 127.0.0.1 19132 Bot 5 60 "Hola!" 3
- *   node mc.js 127.0.0.1 19132 Bot 3 0 "Hola!|Como están?|Bot aquí" 4
+ *   node mc.js 127.0.0.1 19132 1 0
+ *   node mc.js 127.0.0.1 19132 5 60 "Hola!" 3
+ *   node mc.js 127.0.0.1 19132 3 0 "Hola!|Como están?|Bot aquí" 4
  *
  *   time=0 = sin límite (Ctrl+C para parar)
  *   mensajes separados por | para rotar
+ *   
+ *   Los nombres se leen de nombres.txt (formato: 1. nombre o 1: nombre)
  */
 'use strict';
 
 const dgram  = require('dgram');
 const zlib   = require('zlib');
 const crypto = require('crypto');
+const fs     = require('fs');
 
 // ─── Argumentos ───────────────────────────────────────────────────────────────
 const HOST          = process.argv[2]  || '127.0.0.1';
 const PORT          = parseInt(process.argv[3])  || 19132;
-const NOMBRE        = process.argv[4]  || 'Bot';
-const BOTS          = parseInt(process.argv[5])  || 1;
-const TIEMPO        = parseInt(process.argv[6])  || 0;
-const MENSAJES_RAW  = process.argv[7]  || 'Hola!';
-const MSG_INTERVALO = parseInt(process.argv[8])  || 5;
+const BOTS          = parseInt(process.argv[4])  || 1;
+const TIEMPO        = parseInt(process.argv[5])  || 0;
+const MENSAJES_RAW  = process.argv[6]  || 'Hola!';
+const MSG_INTERVALO = parseInt(process.argv[7])  || 5;
 
 const MENSAJES = MENSAJES_RAW.split('|').map(m => m.trim()).filter(Boolean);
 
@@ -34,17 +36,83 @@ let botsConectados  = 0;
 let botsActivos     = [];
 let tiempoTerminado = false;
 
+// ─── Cargar nombres desde nombres.txt ─────────────────────────────────────────
+let NOMBRES_DISPONIBLES = [];
+let NOMBRES_ASIGNADOS = new Set(); // Para evitar repeticiones
+
+try {
+    const contenido = fs.readFileSync('nombres.txt', 'utf8');
+    const lineas = contenido.split('\n');
+    
+    for (const linea of lineas) {
+        const trimmed = linea.trim();
+        if (!trimmed) continue;
+        
+        let nombre = null;
+        
+        // Formato "1. nombre" o "1: nombre"
+        const matchPunto = trimmed.match(/^\d+\.\s*(.+)$/);
+        const matchDosPuntos = trimmed.match(/^\d+:\s*(.+)$/);
+        
+        if (matchPunto) {
+            nombre = matchPunto[1].trim();
+        } else if (matchDosPuntos) {
+            nombre = matchDosPuntos[1].trim();
+        } else if (!trimmed.match(/^\d+[\.:]/)) {
+            // Si no tiene formato numerado, usar la línea directamente
+            nombre = trimmed;
+        }
+        
+        if (nombre && nombre.length > 0) {
+            NOMBRES_DISPONIBLES.push(nombre);
+        }
+    }
+    
+    if (NOMBRES_DISPONIBLES.length === 0) {
+        console.error('[ERROR] No se encontraron nombres válidos en nombres.txt');
+        process.exit(1);
+    }
+    
+    // Mezclar aleatoriamente la lista de nombres
+    for (let i = NOMBRES_DISPONIBLES.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [NOMBRES_DISPONIBLES[i], NOMBRES_DISPONIBLES[j]] = [NOMBRES_DISPONIBLES[j], NOMBRES_DISPONIBLES[i]];
+    }
+    
+    console.log(`[Master] Cargados ${NOMBRES_DISPONIBLES.length} nombres desde nombres.txt`);
+    
+    if (BOTS > NOMBRES_DISPONIBLES.length) {
+        console.warn(`[ADVERTENCIA] Solo hay ${NOMBRES_DISPONIBLES.length} nombres para ${BOTS} bots. Se reutilizarán nombres.`);
+    } else {
+        console.log(`[Master] Asignación SIN repetición (${BOTS} bots, ${NOMBRES_DISPONIBLES.length} nombres disponibles)`);
+    }
+} catch (err) {
+    console.error(`[ERROR] No se pudo leer nombres.txt: ${err.message}`);
+    console.error('[ERROR] Asegúrate de que el archivo existe y tiene el formato:');
+    console.error('  1. osok');
+    console.error('  2. allala');
+    console.error('  3. ososksk');
+    process.exit(1);
+}
+
 console.log(`[Master] Servidor  : ${HOST}:${PORT}`);
-console.log(`[Master] Bots      : ${BOTS}  Nombre base: "${NOMBRE}"`);
+console.log(`[Master] Bots      : ${BOTS}`);
 console.log(`[Master] Tiempo    : ${TIEMPO > 0 ? TIEMPO + 's' : 'ilimitado (Ctrl+C para parar)'}`);
 console.log(`[Master] Mensajes  : ${MENSAJES.join(' | ')}  cada ${MSG_INTERVALO}s\n`);
 
 // ─── Utilidades ───────────────────────────────────────────────────────────────
-function generarNombre(base) {
-  const c = 'abcdefghijklmnopqrstuvwxyz0123456789';
-  let s = '';
-  for (let i = 0; i < 6; i++) s += c[Math.floor(Math.random() * c.length)];
-  return `${base}_${s}`;
+let indiceNombre = 0;
+
+function obtenerNombreAleatorio() {
+    // Si aún hay nombres sin usar, tomar el siguiente de la lista mezclada
+    if (indiceNombre < NOMBRES_DISPONIBLES.length) {
+        const nombre = NOMBRES_DISPONIBLES[indiceNombre];
+        indiceNombre++;
+        return nombre;
+    }
+    // Si ya no quedan nombres sin usar (más bots que nombres), reiniciar el índice
+    indiceNombre = 1;
+    return NOMBRES_DISPONIBLES[0];
 }
 
 // ─── Writer / Reader ──────────────────────────────────────────────────────────
@@ -63,7 +131,6 @@ class W {
   magic()  { this.p.push(MAGIC); return this; }
   str(s)   { const b=Buffer.from(s,'utf8'); this.u16be(b.length); this.p.push(b); return this; }
   strRaw(b){ this.u16be(b.length); this.p.push(b); return this; }
-  // RakNet IP: version(1) + inverted_octets(4) + port(2)
   rakIP(ip, port) {
     this.u8(4);
     ip.split('.').forEach(o => this.u8((~parseInt(o)) & 0xff));
@@ -112,21 +179,20 @@ const P70 = {
 };
 
 // Proto 84 (MCPE 0.16.x) — IDs de paquetes DENTRO del batch
-// Hay dos variantes según la versión exacta de PocketMine
-const P84_A = {   // Versión A: PocketMine-MP 0.16 alpha más antiguo
+const P84_A = {
   LOGIN:          0x01,
   PLAY_STATUS:    0x02,
   DISCONNECT:     0x05,
   RSPACK_INFO:    0x06,
   RSPACK_STACK:   0x07,
   RSPACK_RESP:    0x08,
-  TEXT:           0x07,   // en esta variante TEXT y RSPACK_STACK coinciden — conflicto
+  TEXT:           0x07,
   START_GAME:     0x09,
   MOVE_PLAYER:    0x10,
   CHUNK_RADIUS:   0x3d,
 };
 
-const P84_B = {   // Versión B: PocketMine-MP 0.16 más reciente / estándar Bedrock
+const P84_B = {
   LOGIN:          0x01,
   PLAY_STATUS:    0x02,
   SERVER_HS:      0x03,
@@ -177,7 +243,6 @@ function buildLogin84(bot) {
   const uuid = '00000000-0000-4000-8000-' + crypto.randomBytes(6).toString('hex');
   const now  = Math.floor(Date.now() / 1000);
 
-  // Chain JWT — identidad del jugador
   const chain = makeJWT({
     extraData: { displayName: bot.nombre, identity: uuid, XUID: '' },
     identityPublicKey: pub,
@@ -185,7 +250,6 @@ function buildLogin84(bot) {
     exp: now + 86400,
   });
 
-  // Skin JWT — datos de skin (8192 bytes vacíos)
   const skin = makeJWT({
     ClientRandomId:   Number(bot.clientId & 0xFFFFFFFFn),
     ServerAddress:    `${HOST}:${PORT}`,
@@ -201,11 +265,9 @@ function buildLogin84(bot) {
   const chainBuf = Buffer.from(JSON.stringify({ chain: [chain] }), 'utf8');
   const skinBuf  = Buffer.from(skin, 'utf8');
 
-  // Payload descomprimido: [i32le chainLen][chain][i32le skinLen][skin]
   const raw  = new W().i32le(chainBuf.length).raw(chainBuf).i32le(skinBuf.length).raw(skinBuf).buf();
   const comp = zlib.deflateSync(raw, { level: 7 });
 
-  // Paquete LOGIN: [0xfe][0x01][i32be proto][i32be compLen][comp]
   return Buffer.concat([
     Buffer.from([0xfe, 0x01]),
     new W().i32be(84).i32be(comp.length).raw(comp).buf(),
@@ -235,14 +297,12 @@ function buildBatch(pkts, bot) {
   }));
   const comp = zlib.deflateSync(inner, { level: 7 });
   if (bot.proto >= 84) {
-    // Proto 84: [0xfe][0x06][i32be len][comp]
     return Buffer.concat([Buffer.from([0xfe, 0x06]), new W().i32be(comp.length).raw(comp).buf()]);
   }
-  // Proto 70: [0x92][i32be len][comp]
   return new W().u8(P70.BATCH).i32be(comp.length).raw(comp).buf();
 }
 
-// ─── RakNet frame sender con almacenamiento para NACK ─────────────────────────
+// ─── RakNet frame sender ──────────────────────────────────────────────────────
 const FRAME_STORE_MAX = 1024;
 
 function _rakFrame(bot, payload, isSplit, splitCount, splitId, splitIdx) {
@@ -250,14 +310,13 @@ function _rakFrame(bot, payload, isSplit, splitCount, splitId, splitIdx) {
   const seq = bot.sendSeq++;
   const w   = new W();
   w.u8(0x84).tLE(seq);
-  w.u8(isSplit ? 0x70 : 0x60);      // RELIABLE_ORDERED | (split flag)
+  w.u8(isSplit ? 0x70 : 0x60);
   w.u16be(payload.length * 8);
   w.tLE(bot.msgIndex++).tLE(bot.orderIndex++).u8(0);
   if (isSplit) { w.u32be(splitCount); w.u16be(splitId); w.u32be(splitIdx); }
   w.raw(payload);
   const buf = w.buf();
 
-  // Guardar para retransmisión NACK
   bot.sentFrames.set(seq, buf);
   if (bot.sentFrames.size > FRAME_STORE_MAX) {
     bot.sentFrames.delete(bot.sentFrames.keys().next().value);
@@ -324,7 +383,6 @@ function buildChunkRadius(bot) {
   return new W().u8(getProtoIds(bot).chunk).i32be(8).buf();
 }
 
-// entityId(i64) x(f32) y+1.62(f32) z(f32) yaw(f32) headYaw(f32) pitch(f32) mode(u8) onGround(u8)
 function buildMovePlayer(bot) {
   const p = bot.pos;
   return new W()
@@ -336,13 +394,10 @@ function buildMovePlayer(bot) {
     .buf();
 }
 
-// type=1(CHAT) source(str) message(str)
 function buildChat(bot, msg) {
   return new W().u8(getProtoIds(bot).text).u8(1).str(bot.nombre).str(msg).buf();
 }
 
-// Resource pack response: status(u8) packCount(u16)
-// status: 1=refused 2=send_packs 3=have_all 4=completed
 function buildResourcePackResponse(bot, status) {
   const id = bot.useVariantA ? P84_A.RSPACK_RESP : P84_B.RSPACK_RESP;
   return new W().u8(id).u8(status).u16be(0).buf();
@@ -413,19 +468,17 @@ function onSpawn(bot) {
   startChat(bot);
 }
 
-// ─── Procesamiento de paquetes de juego ───────────────────────────────────────
+// ─── Procesamiento de paquetes ────────────────────────────────────────────────
 function mcpe(bot, data) {
   if (!data || data.length === 0 || bot.isClosing) return;
   const pid = data[0];
   const r   = new R(data); r.skip(1);
 
-  // PLAY_STATUS — proto 70: 0x90, proto 84: 0x02
   if (pid === P70.PLAY_STATUS || pid === 0x02) {
     const st = r.i32be();
     const names = { 0:'Login OK', 1:'Cliente viejo', 2:'Servidor lleno', 3:'Spawneado', 4:'Mundo viejo', 5:'Cliente nuevo' };
     console.log(`[${bot.nombre}] PLAY_STATUS=${st} (${names[st] || '?'})`);
     if (st === 0) {
-      // Login aceptado → pedir chunks inmediatamente
       sendGame(bot, buildChunkRadius(bot));
     } else if (st === 1 || st === 2) {
       cerrarBot(bot);
@@ -435,48 +488,35 @@ function mcpe(bot, data) {
     return;
   }
 
-  // RESOURCE_PACK_INFO — 0x06 (proto 84, solo durante negociación)
-  // NO responder si ya terminó la negociación o si el servidor usa variante A
-  // (en variante A, 0x06 podría ser otro paquete de juego)
   if (pid === 0x06 && bot.proto >= 84 && !bot.resourcePackDone && !bot.useVariantA) {
     console.log(`[${bot.nombre}] Resource pack info → confirmando`);
-    sendGame(bot, buildResourcePackResponse(bot, 3)); // STATUS_HAVE_ALL_PACKS
+    sendGame(bot, buildResourcePackResponse(bot, 3));
     return;
   }
 
-  // RESOURCE_PACK_STACK — 0x07 (proto 84, solo durante negociación pre-spawn)
-  // En variante A: 0x07 = TEXT (chat), NO es resource pack stack
-  // Después de spawn: 0x07 son chats de otros jugadores, no responder
   if (pid === 0x07 && bot.proto >= 84 && !bot.resourcePackDone && !bot.useVariantA) {
     console.log(`[${bot.nombre}] Resource pack stack → completado`);
     bot.resourcePackDone = true;
-    sendGame(bot, buildResourcePackResponse(bot, 4)); // STATUS_COMPLETED
+    sendGame(bot, buildResourcePackResponse(bot, 4));
     return;
   }
 
-  // SERVER_TO_CLIENT_HANDSHAKE — 0x03 (proto 84 con encriptación)
   if (pid === 0x03 && bot.proto >= 84) {
     console.log(`[${bot.nombre}] Server handshake recibido → respondiendo`);
-    sendGame(bot, new W().u8(0x04).buf()); // CLIENT_TO_SERVER_HANDSHAKE
-    // Re-enviar chunk radius por si acaso
+    sendGame(bot, new W().u8(0x04).buf());
     sendGame(bot, buildChunkRadius(bot));
     return;
   }
 
-  // START_GAME — proto 70: 0x95, proto 84 B: 0x0b, proto 84 A: 0x09
   if (pid === P70.START_GAME || pid === 0x09 || pid === 0x0b || pid === 0x11) {
-    // Detectar variante proto 84
     if (bot.proto >= 84) {
       bot.useVariantA = (pid === 0x09);
       console.log(`[${bot.nombre}] START_GAME id=0x${pid.toString(16)} → variante ${bot.useVariantA ? 'A' : 'B'}`);
     }
     try {
-      r.i32be();               // seed
-      r.u8();                  // dimension
-      r.i32be();               // generator type
-      r.i32be();               // gamemode
+      r.i32be(); r.u8(); r.i32be(); r.i32be();
       bot.entityId = r.i64be();
-      r.i32be(); r.i32be(); r.i32be();  // spawn X, Y, Z
+      r.i32be(); r.i32be(); r.i32be();
       bot.pos.x = r.f32be();
       bot.pos.y = r.f32be();
       bot.pos.z = r.f32be();
@@ -484,9 +524,7 @@ function mcpe(bot, data) {
     } catch(e) {
       console.log(`[${bot.nombre}] START_GAME recibido (sin pos)`);
     }
-    // Pedir chunks
     sendGame(bot, buildChunkRadius(bot));
-    // Fallback spawn a los 8s por si no llega PLAY_STATUS(3)
     if (!bot.spawnFallback) {
       bot.spawnFallback = setTimeout(() => {
         if (!bot.spawned && !bot.isClosing && !tiempoTerminado) {
@@ -498,7 +536,6 @@ function mcpe(bot, data) {
     return;
   }
 
-  // DISCONNECT — proto 70: 0x91, proto 84: 0x05
   if (pid === P70.DISCONNECT || pid === 0x05) {
     let msg = '';
     try { msg = r.str(); } catch(e) {}
@@ -507,7 +544,6 @@ function mcpe(bot, data) {
     return;
   }
 
-  // Log de paquetes desconocidos importantes (solo los primeros para no saturar)
   if (!bot._unknownLogged) bot._unknownLogged = {};
   if (!bot._unknownLogged[pid]) {
     bot._unknownLogged[pid] = true;
@@ -516,7 +552,6 @@ function mcpe(bot, data) {
   }
 }
 
-// ─── Descomprimir batch y procesar paquetes ───────────────────────────────────
 function handleBatch(bot, payload) {
   if (bot.isClosing) return;
   try {
@@ -531,18 +566,15 @@ function handleBatch(bot, payload) {
       const len = ir.u32be();
       if (len === 0 || len > ir.left()) break;
       const pkt = ir.bytes(len);
-      // Proto 84: inner packets pueden tener 0xfe wrapper
       mcpe(bot, (pkt[0] === 0xfe && pkt.length > 1) ? pkt.slice(1) : pkt);
     }
   } catch(e) {}
 }
 
-// ─── Procesar payload de RakNet ───────────────────────────────────────────────
 function innerPacket(bot, payload) {
   if (!payload || payload.length === 0 || bot.isClosing) return;
   const pid = payload[0];
 
-  // Connected Ping → pong
   if (pid === 0x00) {
     if (payload.length >= 9) {
       const t = payload.readBigInt64BE(1);
@@ -550,11 +582,10 @@ function innerPacket(bot, payload) {
     }
     return;
   }
-  if (pid === 0x03) return;                          // Connected Pong
-  if (pid === 0x15) { cerrarBot(bot); return; }      // Disconnect Notification
-  if (pid === 0x10) { handleServerHandshake(bot, payload); return; } // New Incoming Conn
+  if (pid === 0x03) return;
+  if (pid === 0x15) { cerrarBot(bot); return; }
+  if (pid === 0x10) { handleServerHandshake(bot, payload); return; }
 
-  // Proto 84: 0xfe + 0x06 = batch
   if (pid === 0xfe) {
     if (payload.length < 2) return;
     const next = payload[1];
@@ -566,16 +597,12 @@ function innerPacket(bot, payload) {
     return;
   }
 
-  // Proto 70: 0x92 = batch
   if (pid === P70.BATCH) { handleBatch(bot, payload.slice(1)); return; }
-
-  // Proto 84 batch sin prefijo 0xfe (algunos servidores)
   if (pid === 0x06 && bot.proto >= 84) { handleBatch(bot, payload.slice(1)); return; }
 
   mcpe(bot, payload);
 }
 
-// ─── Parsear data packet RakNet ───────────────────────────────────────────────
 function parseDataPkt(bot, msg) {
   if (bot.isClosing) return;
   const r   = new R(msg); r.skip(1);
@@ -590,8 +617,8 @@ function parseDataPkt(bot, msg) {
       const bits     = r.u16be();
       const blen     = Math.ceil(bits / 8);
 
-      if ([2,3,4,6,7].includes(rel)) r.tLE();         // messageIndex
-      if ([1,3,4].includes(rel))     { r.tLE(); r.u8(); } // orderIndex + channel
+      if ([2,3,4,6,7].includes(rel)) r.tLE();
+      if ([1,3,4].includes(rel))     { r.tLE(); r.u8(); }
 
       let sc=0, si=0, sx=0;
       if (isSplit) { sc=r.u32be(); si=r.u16be(); sx=r.u32be(); }
@@ -611,7 +638,6 @@ function parseDataPkt(bot, msg) {
   }
 }
 
-// ─── Server Handshake (New Incoming Connection 0x10) ─────────────────────────
 function handleServerHandshake(bot, payload) {
   if (bot.isClosing) return;
   const r = new R(payload); r.skip(1);
@@ -622,7 +648,6 @@ function handleServerHandshake(bot, payload) {
     pingTime = r.i64be();
   } catch(e) {}
 
-  // Client Handshake (0x13)
   const hw = new W().u8(0x13);
   hw.rakIP(HOST, PORT);
   for (let i=0; i<10; i++) hw.u8(4).u8(0x80).u8(0xFF).u8(0xFF).u8(0xFE).u16be(0);
@@ -640,17 +665,15 @@ function handleServerHandshake(bot, payload) {
   }
 }
 
-// ─── Open Connection Request 1 ────────────────────────────────────────────────
 function sendRequest1(bot) {
   if (!bot.sock || bot.isClosing || tiempoTerminado) return;
   const mtu     = MTU_LIST[bot.mtuIdx % MTU_LIST.length];
   bot.mtuSize   = mtu;
-  const padding = Math.max(0, mtu - 28 - 1 - 16 - 1); // mtu - UDP_overhead - ID - MAGIC - version
+  const padding = Math.max(0, mtu - 28 - 1 - 16 - 1);
   const buf     = new W().u8(0x05).magic().u8(7).raw(Buffer.alloc(padding, 0)).buf();
   bot.sock.send(buf, 0, buf.length, PORT, HOST, () => {});
 }
 
-// ─── Cerrar bot ───────────────────────────────────────────────────────────────
 function cerrarBot(bot) {
   if (bot.isClosing) return;
   bot.isClosing = true;
@@ -667,11 +690,10 @@ function cerrarBot(bot) {
   console.log(`[${bot.nombre}] Desconectado`);
 }
 
-// ─── Iniciar bot ──────────────────────────────────────────────────────────────
 function iniciarBot(numero) {
   const bot = {
     id: numero,
-    nombre: generarNombre(NOMBRE),
+    nombre: obtenerNombreAleatorio(),
     phase: 'UNCONNECTED',
     clientId: BigInt('0x' + crypto.randomBytes(8).toString('hex')),
     mtuSize: MTU_LIST[0],
@@ -697,10 +719,9 @@ function iniciarBot(numero) {
     if (tiempoTerminado || bot.isClosing || !msg.length) return;
     const pid = msg[0];
 
-    if (pid === 0xC0) return;                        // ACK
-    if (pid === 0xA0) { handleNACK(bot, msg); return; } // NACK
+    if (pid === 0xC0) return;
+    if (pid === 0xA0) { handleNACK(bot, msg); return; }
 
-    // RakNet data packets
     if (pid >= 0x80 && pid <= 0x8F) {
       parseDataPkt(bot, msg);
       if (bot.ackQueue.length && !bot.isClosing) {
@@ -709,22 +730,15 @@ function iniciarBot(numero) {
       return;
     }
 
-    // ─── Pre-conexión RakNet ─────────────────────────────────────────────────
-
-    // Open Connection Reply 1 (0x06)
     if (pid === 0x06 && bot.phase === 'CONNECTING_1') {
-      // El MTU SIEMPRE está en los últimos 2 bytes del Reply1, sin importar
-      // cuántos campos extras tenga el servidor (serverAddress, etc.)
       if (msg.length >= 2) {
         const m = msg.readUInt16BE(msg.length - 2);
         if (m >= 576 && m <= 1500) {
           bot.mtuSize = m;
         } else {
-          // Valor inválido → usar 1400 seguro
           bot.mtuSize = 1400;
         }
       }
-      // Leer serverGUID (bytes 17-24 del Reply1)
       try {
         if (msg.length >= 25) bot.serverGUID = msg.readBigUInt64BE(17);
       } catch(e) {}
@@ -732,14 +746,11 @@ function iniciarBot(numero) {
       bot.phase = 'CONNECTING_2';
       clearTimeout(bot.mtuRetryT);
       console.log(`[${bot.nombre}] Reply1 OK → MTU=${bot.mtuSize}, enviando Request2`);
-      // Formato estándar RakNet: [serverAddr][mtuSize][clientGUID]
       const req2std = new W().u8(0x07).magic().rakIP(HOST, PORT).u16be(bot.mtuSize).u64be(bot.clientId).buf();
-      // Formato alternativo PMMP: [serverAddr][clientGUID][mtuSize]
       const req2alt = new W().u8(0x07).magic().rakIP(HOST, PORT).u64be(bot.clientId).u16be(bot.mtuSize).buf();
       bot.sock.send(req2std, 0, req2std.length, PORT, HOST, () => {});
       bot._req2flip = false;
 
-      // Retry alternando formatos si no llega Reply2
       const sendReq2 = () => {
         if (bot.phase !== 'CONNECTING_2' || bot.isClosing) return;
         bot._req2flip = !bot._req2flip;
@@ -751,17 +762,14 @@ function iniciarBot(numero) {
       return;
     }
 
-    // Open Connection Reply 2 (0x08)
     if (pid === 0x08 && bot.phase === 'CONNECTING_2') {
       clearTimeout(bot.req2RetryT);
       bot.phase = 'HANDSHAKING';
       console.log(`[${bot.nombre}] Reply2 OK → enviando Client Connect`);
-      // Client Connect (0x09): clientGUID + timestamp + useSecurity
       _rakFrame(bot, new W().u8(0x09).u64be(bot.clientId).i64be(BigInt(Date.now())).u8(0).buf(), false,0,0,0);
       return;
     }
 
-    // Unconnected Pong (0x1C) → detectar proto y conectar
     if (pid === 0x1C && bot.phase === 'UNCONNECTED') {
       try {
         const r = new R(msg); r.skip(1 + 8 + 8 + 16);
@@ -777,7 +785,6 @@ function iniciarBot(numero) {
       clearTimeout(bot.mtuRetryT);
       bot.phase = 'CONNECTING_1';
       sendRequest1(bot);
-      // Empezar ciclo de retry MTU si no hay Reply1
       scheduleMtuRetry(bot);
       return;
     }
@@ -786,11 +793,9 @@ function iniciarBot(numero) {
   bot.sock.on('error', () => {});
   bot.sock.bind(0);
 
-  // Ping inicial (detectar protocolo)
   const pingBuf = new W().u8(0x01).i64be(BigInt(Date.now())).magic().u64be(bot.clientId).buf();
   bot.sock.send(pingBuf, 0, pingBuf.length, PORT, HOST, () => {});
 
-  // Reenviar ping cada 500ms hasta obtener respuesta
   let pingCount = 0;
   const pingInterval = setInterval(() => {
     if (bot.phase !== 'UNCONNECTED' || bot.isClosing || tiempoTerminado) {
@@ -798,7 +803,6 @@ function iniciarBot(numero) {
     }
     pingCount++;
     if (pingCount >= 4) {
-      // Después de 2s sin pong, conectar directo con proto 70
       clearInterval(pingInterval);
       if (bot.phase === 'UNCONNECTED') {
         console.log(`[${bot.nombre}] Sin pong, conectando directo (proto 70)`);
@@ -813,7 +817,6 @@ function iniciarBot(numero) {
     bot.sock.send(pb, 0, pb.length, PORT, HOST, () => {});
   }, 500);
 
-  // Keepalive
   bot.keepaliveInterval = setInterval(() => {
     if (tiempoTerminado || bot.isClosing) { clearInterval(bot.keepaliveInterval); return; }
     if (bot.phase === 'LOGIN' || bot.spawned) {
@@ -824,7 +827,6 @@ function iniciarBot(numero) {
   return bot;
 }
 
-// Ciclo de retry de MTU (si no hay Reply1)
 function scheduleMtuRetry(bot) {
   clearTimeout(bot.mtuRetryT);
   bot.mtuRetryT = setTimeout(() => {
